@@ -13,6 +13,7 @@ use std::marker::PhantomData;
 use std::collections::HashMap;
 
 use protobuf::Message;
+use tracing::warn;
 
 pub(crate) type StreamID = u64;
 
@@ -109,14 +110,16 @@ impl StreamClient {
     }
 
     pub fn recv_update(&mut self) -> Result<StreamUpdate, error::RPCError> {
-        let updates = codec::read_message::<krpc::StreamUpdate>(&mut self.sock)?;
-
         let mut map = HashMap::new();
-        for mut result in updates.results.into_iter() {
-            let taken_result = result.result.take();
-            if let Some(inner_result) = taken_result {
-                map.insert(result.id, inner_result);
+        if let Ok(updates) = codec::read_message::<krpc::StreamUpdate>(&mut self.sock) {
+            for mut result in updates.results.into_iter() {
+                let taken_result = result.result.take();
+                if let Some(inner_result) = taken_result {
+                    map.insert(result.id, inner_result);
+                }
             }
+        } else {
+            warn!("Error Message on proto. Ignoring")
         }
 
         Ok(StreamUpdate { updates: map })
