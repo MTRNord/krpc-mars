@@ -3,6 +3,7 @@ use crate::codec;
 use crate::error;
 use crate::krpc;
 
+use crate::krpc::connection_request;
 use crate::stream::StreamHandle;
 
 use std::net::TcpStream;
@@ -25,7 +26,7 @@ pub struct RPCClient {
 /// [`RPCClient::mk_call`] which provide a nicer API.
 #[derive(Clone, Default)]
 pub struct RPCRequest {
-    calls: protobuf::RepeatedField<krpc::ProcedureCall>,
+    calls: Vec<krpc::ProcedureCall>,
 }
 
 impl RPCRequest {
@@ -35,7 +36,7 @@ impl RPCRequest {
 
     fn build(self) -> krpc::Request {
         let mut req = krpc::Request::new();
-        req.set_calls(self.calls);
+        req.calls = self.calls;
         req
     }
 }
@@ -43,7 +44,7 @@ impl RPCRequest {
 /// A response from the RPC Server
 #[derive(Clone)]
 pub struct RPCResponse {
-    results: protobuf::RepeatedField<krpc::ProcedureResult>,
+    results: Vec<krpc::ProcedureResult>,
 }
 
 /// Represents a procedure call. The type parameter is the type of the value to be extracted from
@@ -92,21 +93,24 @@ impl RPCClient {
         let mut sock = TcpStream::connect(addr)?;
 
         let mut conn_req = krpc::ConnectionRequest::new();
-        conn_req.set_field_type(krpc::ConnectionRequest_Type::RPC);
-        conn_req.set_client_name(client_name.to_string());
+        conn_req.type_ = connection_request::Type::RPC.into();
+        conn_req.client_name = client_name.to_string();
 
         conn_req.write_length_delimited_to_writer(&mut sock)?;
 
-        let mut response = codec::read_message::<krpc::ConnectionResponse>(&mut sock)?;
+        let response = codec::read_message::<krpc::ConnectionResponse>(&mut sock)?;
 
-        match response.status {
-            krpc::ConnectionResponse_Status::OK => Ok(RPCClient {
+        match response.status.enum_value() {
+            Ok(krpc::connection_response::Status::OK) => Ok(RPCClient {
                 sock,
                 client_id: response.client_identifier,
             }),
-            s => Err(error::ConnectionError::ConnectionRefused {
-                error: response.take_message(),
+            Ok(s) => Err(error::ConnectionError::ConnectionRefused {
+                error: response.message,
                 status: s,
+            }),
+            Err(err) => Err(error::ConnectionError::UnknownError {
+                error: err.to_string(),
             }),
         }
     }
@@ -127,10 +131,10 @@ impl RPCClient {
         let raw_request = request.build();
         raw_request.write_length_delimited_to_writer(&mut self.sock)?;
         let mut resp = codec::read_message::<krpc::Response>(&mut self.sock)?;
-        if resp.has_error() {
-            Err(error::RPCError::KRPCRequestErr(resp.take_error()))
+        if let Some(error) = resp.error.take() {
+            Err(error::RPCError::KRPCRequestErr(error))
         } else {
-            let results = resp.take_results();
+            let results = resp.results;
             Ok(RPCResponse { results })
         }
     }

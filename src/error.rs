@@ -9,14 +9,16 @@ pub enum ConnectionError {
 
     /// Protobuf error when doing the handshake
     #[error(transparent)]
-    ProtobufErr(#[from] protobuf::ProtobufError),
+    ProtobufErr(#[from] protobuf::Error),
 
     /// Server refused the connection
     #[error("Connection refused by the server (status {status:?}): {error}")]
     ConnectionRefused {
         error: String,
-        status: krpc::ConnectionResponse_Status,
+        status: krpc::connection_response::Status,
     },
+    #[error("Unknown Error: {error}")]
+    UnknownError { error: String },
 }
 
 /// Errors that can occur when performing an RPC.
@@ -28,10 +30,10 @@ pub enum RPCError {
     /// An error raised by the kRPC mod
     #[error(
         "The RPC request failed: service={} procedure={} description={}",
-        .0.get_service(), .0.get_name(), .0.get_description())
+        .0.service, .0.name, .0.description)
     ]
     KRPCRequestErr(krpc::Error),
     /// Some protobuf error on the request/response level
     #[error(transparent)]
-    ProtobufErr(#[from] protobuf::ProtobufError),
+    ProtobufErr(#[from] protobuf::Error),
 }

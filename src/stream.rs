@@ -45,16 +45,15 @@ impl<T> StreamHandle<T> {
         use codec::RPCEncodable;
 
         let mut arg = krpc::Argument::new();
-        arg.set_position(0);
-        arg.set_value(self.stream_id.encode_to_bytes().unwrap());
+        arg.position = 0;
+        arg.value = self.stream_id.encode_to_bytes().unwrap();
 
-        let mut arguments = protobuf::RepeatedField::<krpc::Argument>::new();
-        arguments.push(arg);
+        let arguments: Vec<krpc::Argument> = vec![arg];
 
         let mut proc_call = krpc::ProcedureCall::new();
-        proc_call.set_service(String::from("KRPC"));
-        proc_call.set_procedure(String::from("RemoveStream"));
-        proc_call.set_arguments(arguments);
+        proc_call.service = String::from("KRPC");
+        proc_call.procedure = String::from("RemoveStream");
+        proc_call.arguments = arguments;
 
         CallHandle::<()>::new(proc_call)
     }
@@ -68,16 +67,15 @@ impl<T> StreamHandle<T> {
 /// this library confesses he had some fun with this.
 pub fn mk_stream<T: codec::RPCExtractable>(call: &CallHandle<T>) -> CallHandle<StreamHandle<T>> {
     let mut arg = krpc::Argument::new();
-    arg.set_position(0);
-    arg.set_value(call.get_call().write_to_bytes().unwrap());
+    arg.position = 0;
+    arg.value = call.get_call().write_to_bytes().unwrap();
 
-    let mut arguments = protobuf::RepeatedField::<krpc::Argument>::new();
-    arguments.push(arg);
+    let arguments: Vec<krpc::Argument> = vec![arg];
 
     let mut proc_call = krpc::ProcedureCall::new();
-    proc_call.set_service(String::from("KRPC"));
-    proc_call.set_procedure(String::from("AddStream"));
-    proc_call.set_arguments(arguments);
+    proc_call.service = String::from("KRPC");
+    proc_call.procedure = String::from("AddStream");
+    proc_call.arguments = arguments;
 
     CallHandle::<StreamHandle<T>>::new(proc_call)
 }
@@ -91,18 +89,21 @@ impl StreamClient {
         let mut sock = TcpStream::connect(addr)?;
 
         let mut conn_req = krpc::ConnectionRequest::new();
-        conn_req.set_field_type(krpc::ConnectionRequest_Type::STREAM);
-        conn_req.set_client_identifier(client.client_id.clone());
+        conn_req.type_ = krpc::connection_request::Type::STREAM.into();
+        conn_req.client_identifier = client.client_id.clone();
 
         conn_req.write_length_delimited_to_writer(&mut sock)?;
 
-        let mut response = codec::read_message::<krpc::ConnectionResponse>(&mut sock)?;
+        let response = codec::read_message::<krpc::ConnectionResponse>(&mut sock)?;
 
-        match response.status {
-            krpc::ConnectionResponse_Status::OK => Ok(Self { sock }),
-            s => Err(error::ConnectionError::ConnectionRefused {
-                error: response.take_message(),
+        match response.status.enum_value() {
+            Ok(krpc::connection_response::Status::OK) => Ok(Self { sock }),
+            Ok(s) => Err(error::ConnectionError::ConnectionRefused {
+                error: response.message,
                 status: s,
+            }),
+            Err(err) => Err(error::ConnectionError::UnknownError {
+                error: err.to_string(),
             }),
         }
     }
@@ -112,7 +113,10 @@ impl StreamClient {
 
         let mut map = HashMap::new();
         for mut result in updates.results.into_iter() {
-            map.insert(result.id, result.take_result());
+            let taken_result = result.result.take();
+            if let Some(inner_result) = taken_result {
+                map.insert(result.id, inner_result);
+            }
         }
 
         Ok(StreamUpdate { updates: map })
@@ -131,7 +135,7 @@ impl StreamUpdate {
         T: codec::RPCExtractable,
     {
         if let Some(result) = self.updates.get(&handle.stream_id) {
-            let res = codec::extract_result(&result)?;
+            let res = codec::extract_result(result)?;
             Ok(Some(res))
         } else {
             Ok(None)
