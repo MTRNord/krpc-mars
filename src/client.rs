@@ -6,12 +6,14 @@ use crate::krpc;
 use crate::krpc::connection_request;
 use crate::stream::StreamHandle;
 
-use std::net::TcpStream;
-use std::net::ToSocketAddrs;
-
 use std::marker::PhantomData;
 
+use bytes::BytesMut;
 use protobuf::Message;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
+use tokio::net::ToSocketAddrs;
 
 /// A client to the RPC server.
 #[derive(Debug)]
@@ -86,19 +88,25 @@ where
 
 impl RPCClient {
     /// Connects to the KRPC server. The client will show up in the KRPC UI with the given client name.
-    pub fn connect<A: ToSocketAddrs>(
+    pub async fn connect<A: ToSocketAddrs>(
         client_name: &str,
         addr: A,
     ) -> Result<Self, error::ConnectionError> {
-        let mut sock = TcpStream::connect(addr)?;
+        let mut sock = TcpStream::connect(addr).await?;
 
         let mut conn_req = krpc::ConnectionRequest::new();
         conn_req.type_ = connection_request::Type::RPC.into();
         conn_req.client_name = client_name.to_string();
 
-        conn_req.write_length_delimited_to_writer(&mut sock)?;
+        let data = conn_req.write_to_bytes()?;
+        sock.write_all(&data).await?;
 
-        let response = codec::read_message::<krpc::ConnectionResponse>(&mut sock)?;
+        sock.readable().await?;
+
+        let mut buffer = BytesMut::with_capacity(1024);
+        sock.read_buf(&mut buffer).await?;
+
+        let response = codec::read_message::<krpc::ConnectionResponse>(&buffer.freeze())?;
 
         match response.status.enum_value() {
             Ok(krpc::connection_response::Status::OK) => Ok(RPCClient {
@@ -116,7 +124,7 @@ impl RPCClient {
     }
 
     /// Sends a single RPC request to the server.
-    pub fn mk_call<T: codec::RPCExtractable>(
+    pub async fn mk_call<T: codec::RPCExtractable>(
         &mut self,
         call: &CallHandle<T>,
     ) -> Result<T, error::RPCError> {
@@ -127,10 +135,20 @@ impl RPCClient {
     /// Sends an [`RPCRequest`] to the server. A single RPCRequest may contain multiple RPC calls.
     /// It is recommended to use the [`batch_call!`](crate::batch_call) or
     /// [`batch_call_unwrap!`](crate::batch_call_unwrap) for one-off requests.
-    pub fn submit_request(&mut self, request: RPCRequest) -> Result<RPCResponse, error::RPCError> {
+    pub async fn submit_request(
+        &mut self,
+        request: RPCRequest,
+    ) -> Result<RPCResponse, error::RPCError> {
         let raw_request = request.build();
-        raw_request.write_length_delimited_to_writer(&mut self.sock)?;
-        let mut resp = codec::read_message::<krpc::Response>(&mut self.sock)?;
+        let data = raw_request.write_to_bytes()?;
+        self.sock.write_all(&data).await?;
+
+        self.sock.readable().await?;
+
+        let mut buffer = BytesMut::with_capacity(1024);
+        self.sock.read_buf(&mut buffer).await?;
+
+        let mut resp = codec::read_message::<krpc::Response>(&buffer.freeze())?;
         if let Some(error) = resp.error.take() {
             Err(error::RPCError::KRPCRequestErr(error))
         } else {

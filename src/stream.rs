@@ -5,14 +5,16 @@ use crate::krpc;
 
 use crate::client::CallHandle;
 
-use std::net::TcpStream;
-use std::net::ToSocketAddrs;
-
 use std::marker::PhantomData;
 
 use std::collections::HashMap;
 
+use bytes::BytesMut;
 use protobuf::Message;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
+use tokio::net::ToSocketAddrs;
 use tracing::warn;
 
 pub(crate) type StreamID = u64;
@@ -83,19 +85,25 @@ pub fn mk_stream<T: codec::RPCExtractable>(call: &CallHandle<T>) -> CallHandle<S
 
 impl StreamClient {
     /// Connect to the stream server associated with the given client.
-    pub fn connect<A: ToSocketAddrs>(
+    pub async fn connect<A: ToSocketAddrs>(
         client: &super::RPCClient,
         addr: A,
     ) -> Result<Self, error::ConnectionError> {
-        let mut sock = TcpStream::connect(addr)?;
+        let mut sock = TcpStream::connect(addr).await?;
 
         let mut conn_req = krpc::ConnectionRequest::new();
         conn_req.type_ = krpc::connection_request::Type::STREAM.into();
         conn_req.client_identifier = client.client_id.clone();
 
-        conn_req.write_length_delimited_to_writer(&mut sock)?;
+        let data = conn_req.write_to_bytes()?;
+        sock.write_all(&data).await?;
 
-        let response = codec::read_message::<krpc::ConnectionResponse>(&mut sock)?;
+        sock.readable().await?;
+
+        let mut buffer = BytesMut::with_capacity(1024);
+        sock.read_buf(&mut buffer).await?;
+
+        let response = codec::read_message::<krpc::ConnectionResponse>(&buffer.freeze())?;
 
         match response.status.enum_value() {
             Ok(krpc::connection_response::Status::OK) => Ok(Self { sock }),
@@ -109,9 +117,13 @@ impl StreamClient {
         }
     }
 
-    pub fn recv_update(&mut self) -> Result<StreamUpdate, error::RPCError> {
+    pub async fn recv_update(&mut self) -> Result<StreamUpdate, error::RPCError> {
         let mut map = HashMap::new();
-        if let Ok(updates) = codec::read_message::<krpc::StreamUpdate>(&mut self.sock) {
+        self.sock.readable().await?;
+
+        let mut buffer = BytesMut::with_capacity(4096);
+        self.sock.read_buf(&mut buffer).await?;
+        if let Ok(updates) = codec::read_message::<krpc::StreamUpdate>(&buffer.freeze()) {
             for mut result in updates.results.into_iter() {
                 let taken_result = result.result.take();
                 if let Some(inner_result) = taken_result {

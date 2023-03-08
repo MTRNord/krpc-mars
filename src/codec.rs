@@ -3,13 +3,13 @@ use crate::krpc; // Generated from the protobuf file
 
 use crate::error;
 
+use bytes::Bytes;
 use protobuf;
 use protobuf::Message;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::Hash;
-use std::io::Read;
 
 pub trait RPCExtractable: Sized {
     fn extract_value(input: &mut protobuf::CodedInputStream) -> Result<Self, protobuf::Error>;
@@ -347,11 +347,11 @@ where
 }
 
 /// Reads a protobuf message from a source.
-pub(crate) fn read_message<M>(sock: &mut dyn Read) -> Result<M, protobuf::Error>
+pub(crate) fn read_message<M>(bytes: &Bytes) -> Result<M, protobuf::Error>
 where
     M: protobuf::Message,
 {
-    let mut input_stream = protobuf::CodedInputStream::new(sock);
+    let mut input_stream = protobuf::CodedInputStream::from_tokio_bytes(bytes);
     input_stream.read_message()
 }
 

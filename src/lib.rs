@@ -15,7 +15,7 @@ pub mod error;
 
 // Re-exported for the generated code
 pub mod codec;
-pub mod krpc;
+include!(concat!(env!("OUT_DIR"), "/krpc/mod.rs"));
 pub use protobuf;
 
 #[doc(hidden)]
@@ -24,7 +24,7 @@ macro_rules! batch_call_common {
     ($process_result:expr, $client:expr, ( $( $call:expr ),+ )) => {{
         let mut request = $crate::client::RPCRequest::default();
         $( request.add_call($call); )+
-        match $client.submit_request(request) {
+        match $client.submit_request(request).await {
             Err(e) => {
                 Err(e)
             }
